@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
 import { BlockMath, InlineMath } from "react-katex";
 import "katex/dist/katex.min.css";
 import "./App.css";
@@ -40,6 +39,15 @@ type TestResult = {
 const STORAGE_KEY = "memory-anki.cards.v1";
 const DECKS_KEY = "memory-anki.decks.v1";
 const DEFAULT_DECK = "General";
+
+const isTauri = () =>
+  typeof window !== "undefined" &&
+  Boolean((window as { __TAURI__?: unknown }).__TAURI__);
+
+const invokeTauri = async <T,>(command: string, payload?: Record<string, unknown>) => {
+  const module = await import("@tauri-apps/api/core");
+  return module.invoke<T>(command, payload);
+};
 
 const formatDateTime = (date: Date) =>
   new Intl.DateTimeFormat("ja-JP", {
@@ -148,23 +156,38 @@ function App() {
   useEffect(() => {
     const load = async () => {
       try {
-        const payload = await invoke<{
-          cards?: Card[];
-          decks?: string[];
-        }>("load_storage");
+        if (isTauri()) {
+          const payload = await invokeTauri<{
+            cards?: Card[];
+            decks?: string[];
+          }>("load_storage");
 
-        if (payload?.cards) {
-          setCards(payload.cards as Card[]);
+          if (payload?.cards) {
+            setCards(payload.cards as Card[]);
+          } else {
+            const stored = localStorage.getItem(STORAGE_KEY);
+            if (stored) {
+              setCards(JSON.parse(stored));
+            }
+          }
+
+          if (payload?.decks && payload.decks.length > 0) {
+            setDecks(payload.decks);
+          } else {
+            const storedDecks = localStorage.getItem(DECKS_KEY);
+            if (storedDecks) {
+              const parsed = JSON.parse(storedDecks);
+              if (Array.isArray(parsed) && parsed.length > 0) {
+                setDecks(parsed);
+              }
+            }
+          }
         } else {
           const stored = localStorage.getItem(STORAGE_KEY);
           if (stored) {
             setCards(JSON.parse(stored));
           }
-        }
 
-        if (payload?.decks && payload.decks.length > 0) {
-          setDecks(payload.decks);
-        } else {
           const storedDecks = localStorage.getItem(DECKS_KEY);
           if (storedDecks) {
             const parsed = JSON.parse(storedDecks);
@@ -184,12 +207,17 @@ function App() {
   useEffect(() => {
     const save = async () => {
       try {
-        await invoke("save_storage", {
-          payload: {
-            cards,
-            decks,
-          },
-        });
+        if (isTauri()) {
+          await invokeTauri("save_storage", {
+            payload: {
+              cards,
+              decks,
+            },
+          });
+        } else {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(cards));
+          localStorage.setItem(DECKS_KEY, JSON.stringify(decks));
+        }
       } catch (error) {
         console.warn("Failed to save storage", error);
       }
