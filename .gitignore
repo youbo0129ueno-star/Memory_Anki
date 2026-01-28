@@ -1,0 +1,9 @@
+.DS_Store
+handoff_summary.txt
+memory-anki/node_modules/
+memory-anki/dist/
+memory-anki/import_*.txt
+memory-anki/data/decks/
+*.png
+*.jpg
+*.jpeg
