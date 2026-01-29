@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { createClient, type SupabaseClient, type User } from "@supabase/supabase-js";
 import { BlockMath, InlineMath } from "react-katex";
 import "katex/dist/katex.min.css";
 import "./App.css";
@@ -39,6 +40,10 @@ type TestResult = {
 const STORAGE_KEY = "memory-anki.cards.v1";
 const DECKS_KEY = "memory-anki.decks.v1";
 const DEFAULT_DECK = "General";
+const SYNC_KEY_STORAGE = "memory-anki.syncKey";
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 const isTauri = () =>
   typeof window !== "undefined" &&
@@ -47,6 +52,42 @@ const isTauri = () =>
 const invokeTauri = async <T,>(command: string, payload?: Record<string, unknown>) => {
   const module = await import("@tauri-apps/api/core");
   return module.invoke<T>(command, payload);
+};
+
+const bytesToBase64 = (bytes: Uint8Array) =>
+  btoa(String.fromCharCode(...bytes));
+
+const base64ToBytes = (value: string) =>
+  Uint8Array.from(atob(value), (c) => c.charCodeAt(0));
+
+const getCryptoKey = async (keyBase64: string) =>
+  crypto.subtle.importKey("raw", base64ToBytes(keyBase64), "AES-GCM", false, [
+    "encrypt",
+    "decrypt",
+  ]);
+
+const encryptPayload = async (payload: unknown, keyBase64: string) => {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = new TextEncoder().encode(JSON.stringify(payload));
+  const key = await getCryptoKey(keyBase64);
+  const encrypted = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, data);
+  return {
+    iv: bytesToBase64(iv),
+    data: bytesToBase64(new Uint8Array(encrypted)),
+  };
+};
+
+const decryptPayload = async (
+  payload: { iv: string; data: string },
+  keyBase64: string
+) => {
+  const key = await getCryptoKey(keyBase64);
+  const decrypted = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: base64ToBytes(payload.iv) },
+    key,
+    base64ToBytes(payload.data)
+  );
+  return JSON.parse(new TextDecoder().decode(decrypted));
 };
 
 const formatDateTime = (date: Date) =>
@@ -127,7 +168,7 @@ const renderTextWithLatex = (text: string) => {
 
 function App() {
   const [activeTab, setActiveTab] = useState<
-    "import" | "cards" | "review" | "test"
+    "import" | "cards" | "review" | "test" | "sync"
   >(
     "import"
   );
@@ -147,11 +188,22 @@ function App() {
     explanation: "",
     choicesText: "",
   });
+  const [syncEmail, setSyncEmail] = useState("");
+  const [syncPassword, setSyncPassword] = useState("");
+  const [syncUser, setSyncUser] = useState<User | null>(null);
+  const [syncKeyInput, setSyncKeyInput] = useState("");
+  const [syncStatus, setSyncStatus] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [testStatus, setTestStatus] = useState<TestStatus>("idle");
   const [testCards, setTestCards] = useState<ChoiceCard[]>([]);
   const [testIndex, setTestIndex] = useState(0);
   const [testResults, setTestResults] = useState<TestResult[]>([]);
   const [testSelection, setTestSelection] = useState<string | null>(null);
+
+  const supabase: SupabaseClient | null = useMemo(() => {
+    if (!SUPABASE_URL || !SUPABASE_ANON_KEY) return null;
+    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }, []);
 
   useEffect(() => {
     const load = async () => {
@@ -225,6 +277,26 @@ function App() {
 
     save();
   }, [cards, decks]);
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(({ data }) => {
+      setSyncUser(data.session?.user ?? null);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSyncUser(session?.user ?? null);
+    });
+    return () => {
+      data.subscription.unsubscribe();
+    };
+  }, [supabase]);
+
+  useEffect(() => {
+    const stored = localStorage.getItem(SYNC_KEY_STORAGE);
+    if (stored) {
+      setSyncKeyInput(stored);
+    }
+  }, []);
 
   useEffect(() => {
     if (editingCard) {
@@ -520,6 +592,116 @@ function App() {
     startTest(wrongCards);
   };
 
+  const ensureSyncKey = () => {
+    if (!syncKeyInput.trim()) {
+      setSyncError("同期キーが未設定です。");
+      return false;
+    }
+    localStorage.setItem(SYNC_KEY_STORAGE, syncKeyInput.trim());
+    return true;
+  };
+
+  const generateSyncKey = () => {
+    const bytes = crypto.getRandomValues(new Uint8Array(32));
+    const key = bytesToBase64(bytes);
+    setSyncKeyInput(key);
+    localStorage.setItem(SYNC_KEY_STORAGE, key);
+    setSyncStatus("同期キーを生成しました。");
+  };
+
+  const handleSignUp = async () => {
+    if (!supabase) return;
+    setSyncError(null);
+    setSyncStatus(null);
+    const { error } = await supabase.auth.signUp({
+      email: syncEmail.trim(),
+      password: syncPassword,
+    });
+    if (error) {
+      setSyncError(error.message);
+      return;
+    }
+    setSyncStatus("サインアップ完了。メール確認が必要な場合があります。");
+  };
+
+  const handleSignIn = async () => {
+    if (!supabase) return;
+    setSyncError(null);
+    setSyncStatus(null);
+    const { error } = await supabase.auth.signInWithPassword({
+      email: syncEmail.trim(),
+      password: syncPassword,
+    });
+    if (error) {
+      setSyncError(error.message);
+      return;
+    }
+    setSyncStatus("ログインしました。");
+  };
+
+  const handleSignOut = async () => {
+    if (!supabase) return;
+    await supabase.auth.signOut();
+    setSyncStatus("ログアウトしました。");
+  };
+
+  const uploadToCloud = async () => {
+    if (!supabase || !syncUser) return;
+    setSyncError(null);
+    setSyncStatus(null);
+    if (!ensureSyncKey()) return;
+    try {
+      const encrypted = await encryptPayload({ cards, decks }, syncKeyInput.trim());
+      const { error } = await supabase
+        .from("user_data")
+        .upsert(
+          {
+            user_id: syncUser.id,
+            payload: JSON.stringify(encrypted),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id" }
+        );
+      if (error) throw error;
+      setSyncStatus("クラウドにアップロードしました。");
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : "アップロードに失敗しました。");
+    }
+  };
+
+  const downloadFromCloud = async () => {
+    if (!supabase || !syncUser) return;
+    setSyncError(null);
+    setSyncStatus(null);
+    if (!ensureSyncKey()) return;
+    if (!window.confirm("クラウドの内容で上書きします。よろしいですか？")) {
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from("user_data")
+        .select("payload")
+        .eq("user_id", syncUser.id)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data?.payload) {
+        setSyncError("クラウドにデータがありません。");
+        return;
+      }
+      const parsed = JSON.parse(data.payload) as { iv: string; data: string };
+      const decrypted = await decryptPayload(parsed, syncKeyInput.trim());
+      if (decrypted?.cards) {
+        setCards(decrypted.cards as Card[]);
+      }
+      if (decrypted?.decks) {
+        setDecks(decrypted.decks as string[]);
+      }
+      setSyncStatus("クラウドから復元しました。");
+    } catch (error) {
+      setSyncError(error instanceof Error ? error.message : "復元に失敗しました。");
+    }
+  };
+
   return (
     <div className="app">
       <header className="app__header">
@@ -610,6 +792,13 @@ function App() {
           onClick={() => setActiveTab("test")}
         >
           テスト
+        </button>
+        <button
+          type="button"
+          className={activeTab === "sync" ? "is-active" : ""}
+          onClick={() => setActiveTab("sync")}
+        >
+          同期
         </button>
       </nav>
 
@@ -810,6 +999,107 @@ function App() {
                 <button type="button" onClick={resetTest}>
                   終了
                 </button>
+              </div>
+            )}
+          </section>
+        )}
+
+        {activeTab === "sync" && (
+          <section className="panel">
+            <h2>同期（クラウド）</h2>
+            {!SUPABASE_URL || !SUPABASE_ANON_KEY ? (
+              <p className="error">
+                Supabaseの設定がありません。`.env` に
+                `VITE_SUPABASE_URL` と `VITE_SUPABASE_ANON_KEY` を設定してください。
+              </p>
+            ) : (
+              <div className="sync-panel">
+                <div className="sync-section">
+                  <h3>ログイン</h3>
+                  {!syncUser ? (
+                    <>
+                      <input
+                        type="email"
+                        placeholder="メールアドレス"
+                        value={syncEmail}
+                        onChange={(event) => setSyncEmail(event.target.value)}
+                      />
+                      <input
+                        type="password"
+                        placeholder="パスワード"
+                        value={syncPassword}
+                        onChange={(event) => setSyncPassword(event.target.value)}
+                      />
+                      <div className="sync-actions">
+                        <button type="button" onClick={handleSignIn}>
+                          ログイン
+                        </button>
+                        <button type="button" onClick={handleSignUp}>
+                          サインアップ
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="sync-authenticated">
+                      <p>ログイン中: {syncUser.email}</p>
+                      <button type="button" onClick={handleSignOut}>
+                        ログアウト
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                <div className="sync-section">
+                  <h3>同期キー</h3>
+                  <p className="sync-help">
+                    このキーで暗号化されます。別端末でも使う場合は同じキーを入力してください。
+                  </p>
+                  <input
+                    type="text"
+                    placeholder="同期キー"
+                    value={syncKeyInput}
+                    onChange={(event) => setSyncKeyInput(event.target.value)}
+                  />
+                  <div className="sync-actions">
+                    <button type="button" onClick={generateSyncKey}>
+                      生成
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (ensureSyncKey()) {
+                          setSyncStatus("同期キーを保存しました。");
+                        }
+                      }}
+                    >
+                      保存
+                    </button>
+                  </div>
+                </div>
+
+                <div className="sync-section">
+                  <h3>同期操作</h3>
+                  <div className="sync-actions">
+                    <button
+                      type="button"
+                      className="primary"
+                      onClick={uploadToCloud}
+                      disabled={!syncUser}
+                    >
+                      アップロード
+                    </button>
+                    <button
+                      type="button"
+                      onClick={downloadFromCloud}
+                      disabled={!syncUser}
+                    >
+                      ダウンロード
+                    </button>
+                  </div>
+                </div>
+
+                {syncStatus && <p className="sync-status">{syncStatus}</p>}
+                {syncError && <p className="error">{syncError}</p>}
               </div>
             )}
           </section>

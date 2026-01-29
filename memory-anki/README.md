@@ -19,6 +19,13 @@ The site URL will be:
 
 If you rename the repository, update `base` in `memory-anki/vite.config.ts`.
 
+### Required GitHub Secrets for Pages build
+
+Set these repository secrets (Settings → Secrets and variables → Actions):
+
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
+
 ## Recommended IDE Setup
 
 - [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)

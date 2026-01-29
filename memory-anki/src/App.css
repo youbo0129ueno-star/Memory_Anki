@@ -478,6 +478,57 @@ button.danger {
   gap: 10px;
 }
 
+.sync-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.sync-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.sync-section h3 {
+  margin: 0;
+}
+
+.sync-section input {
+  width: 100%;
+  border-radius: 12px;
+  padding: 10px 12px;
+  border: 1px solid #cbd5f5;
+  font-family: inherit;
+  font-size: 0.95rem;
+}
+
+.sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sync-help {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.9rem;
+}
+
+.sync-authenticated p {
+  margin: 0;
+  color: #334155;
+}
+
+.sync-status {
+  margin: 0;
+  font-weight: 600;
+  color: #0f766e;
+}
+
 @media (max-width: 720px) {
   .app {
     padding: 24px 16px 36px;

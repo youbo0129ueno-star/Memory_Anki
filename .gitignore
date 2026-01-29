@@ -4,6 +4,8 @@ memory-anki/node_modules/
 memory-anki/dist/
 memory-anki/import_*.txt
 memory-anki/data/decks/
+memory-anki/.env
+memory-anki/.env.*
 *.png
 *.jpg
 *.jpeg
